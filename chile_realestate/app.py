@@ -39,6 +39,12 @@ from scraper import (
     Currency,
     create_property_from_scraped,
 )
+from market_intelligence import (
+    MarketIntelligence,
+    MarketIntelligenceReport,
+    ConnectivityLevel,
+    PricePosition,
+)
 
 
 # =============================================================================
@@ -758,6 +764,144 @@ def render_cashflow_chart(
 
 
 # =============================================================================
+# MARKET INTELLIGENCE SECTION
+# =============================================================================
+
+def render_market_intelligence(
+    property_input: PropertyInput,
+    scraped_data: Optional[ScrapedProperty],
+    currency: str,
+    calc: RealEstateCalculator
+):
+    """Renderizar sección de inteligencia de mercado"""
+
+    st.header("🧠 Inteligencia de Mercado")
+
+    # Obtener datos
+    mi = MarketIntelligence()
+
+    # Determinar dormitorios y baños
+    dormitorios = 2
+    banos = 1
+    if scraped_data:
+        dormitorios = scraped_data.habitaciones or 2
+        banos = scraped_data.banos or 1
+
+    # Generar reporte
+    report = mi.generate_report(
+        precio_uf=property_input.precio_uf,
+        superficie_m2=property_input.superficie_m2,
+        comuna=property_input.comuna,
+        dormitorios=dormitorios,
+        banos=banos,
+    )
+
+    # Layout en 3 columnas
+    col1, col2, col3 = st.columns(3)
+
+    # --- Análisis de Arriendo ---
+    with col1:
+        st.subheader("🏷️ Arriendo Sugerido")
+
+        rent = report.rent_analysis
+        if rent:
+            # Tarjeta con el arriendo sugerido
+            st.metric(
+                "Arriendo Recomendado",
+                f"${rent.suggested_rent_clp:,.0f} CLP",
+                delta=f"€{calc.clp_to_eur(rent.suggested_rent_clp):,.0f}/mes",
+                delta_color="off"
+            )
+
+            # Detalles
+            st.markdown(f"""
+            **Análisis de {rent.comparables_count} comparables:**
+            - Promedio: ${rent.average_rent_clp:,.0f} CLP
+            - Mediana: ${rent.median_rent_clp:,.0f} CLP
+            - Rango: ${rent.min_rent_clp:,.0f} - ${rent.max_rent_clp:,.0f}
+            - Precio/m²: ${rent.average_price_m2:,.0f} CLP/m²
+
+            *{rent.methodology}*
+            """)
+
+            # Comparación con input actual
+            diff = property_input.arriendo_clp - rent.suggested_rent_clp
+            if abs(diff) > 50000:
+                if diff > 0:
+                    st.warning(f"⚠️ Tu estimación (${property_input.arriendo_clp:,.0f}) está ${diff:,.0f} sobre el mercado")
+                else:
+                    st.info(f"ℹ️ Tu estimación (${property_input.arriendo_clp:,.0f}) está ${abs(diff):,.0f} bajo el mercado")
+
+    # --- Análisis de Conectividad ---
+    with col2:
+        st.subheader("🚇 Conectividad Metro")
+
+        loc = report.location_analysis
+        if loc and loc.nearest_station:
+            # Badge de conectividad
+            if loc.connectivity_level == ConnectivityLevel.HIGH:
+                st.success("🟢 ALTA CONECTIVIDAD")
+            elif loc.connectivity_level == ConnectivityLevel.MEDIUM:
+                st.warning("🟡 MEDIA CONECTIVIDAD")
+            elif loc.connectivity_level == ConnectivityLevel.LOW:
+                st.info("🔵 BAJA CONECTIVIDAD")
+            else:
+                st.error("🔴 SIN METRO CERCANO")
+
+            st.metric(
+                f"Metro {loc.nearest_station.name}",
+                f"{loc.distance_meters:.0f} m",
+                delta=f"~{loc.walking_time_minutes} min a pie",
+                delta_color="off"
+            )
+
+            st.markdown(f"""
+            **Línea:** {loc.nearest_station.line}
+
+            **Líneas accesibles:** {', '.join(loc.metro_lines_nearby) if loc.metro_lines_nearby else 'N/A'}
+
+            **Estaciones cercanas:** {len(loc.nearby_stations)}
+            """)
+        else:
+            st.warning("No se encontró información de Metro para esta ubicación")
+
+    # --- Análisis de Precio ---
+    with col3:
+        st.subheader("💰 Precio vs Mercado")
+
+        price = report.price_analysis
+        if price:
+            # Badge de posición de precio
+            if price.price_position == PricePosition.BELOW_MARKET:
+                st.success("🟢 OPORTUNIDAD")
+            elif price.price_position == PricePosition.AT_MARKET:
+                st.info("🔵 PRECIO JUSTO")
+            elif price.price_position == PricePosition.ABOVE_MARKET:
+                st.warning("🟡 SOBRE MERCADO")
+            else:
+                st.error("🔴 PRECIO PREMIUM")
+
+            st.metric(
+                "UF/m² Propiedad",
+                f"{price.uf_per_m2:.1f} UF/m²",
+                delta=f"{price.price_diff_percent:+.1f}% vs mercado",
+                delta_color="inverse" if price.price_diff_percent > 0 else "normal"
+            )
+
+            st.markdown(f"""
+            **Promedio {property_input.comuna}:** {price.commune_average_uf_m2:.0f} UF/m²
+
+            **Diferencia:** {price.price_diff_uf_m2:+.1f} UF/m²
+
+            ---
+            *{price.analysis_text}*
+            """)
+
+    # Separador
+    st.markdown("---")
+
+
+# =============================================================================
 # MAIN APP
 # =============================================================================
 
@@ -790,6 +934,14 @@ def main():
         render_kpi_cards(metrics, calc, inputs["display_currency"])
 
         render_cashflow_warning(metrics, inputs["display_currency"])
+
+        # Sección de Inteligencia de Mercado
+        render_market_intelligence(
+            property_input=inputs["property_input"],
+            scraped_data=inputs.get("scraped_data"),
+            currency=inputs["display_currency"],
+            calc=calc
+        )
 
         # Gráficos
         col1, col2 = st.columns([2, 1])
